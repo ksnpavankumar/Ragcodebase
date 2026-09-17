@@ -7,8 +7,6 @@ Original file is located at
     https://colab.research.google.com/drive/1VMo_mPZAsCFNIqAK1kNSSbqGZXt3pjLK
 """
 
-!git clone https://github.com/ksnpavankumar/Ragcodebase.git
-
 pwd
 
 # Commented out IPython magic to ensure Python compatibility.
@@ -154,15 +152,19 @@ def query_internal_employee_api(employee_identifier: str):
 # ==========================================
 # 0.2 LIVE JIRA REST API INTEGRATION
 # ==========================================
+# ==========================================
+# NEW: Jira Text Search (Title/Description)
+# ==========================================
+# ==========================================
+# 0.2 LIVE JIRA REST API INTEGRATION
+# ==========================================
 def query_jira_api(issue_key: str):
-    # CRITICAL FIX: Use the REST API endpoint, not /browse/
     url = f"https://{ATLASSIAN_DOMAIN}/rest/api/3/issue/{issue_key.strip().upper()}"
     auth = (ATLASSIAN_EMAIL.strip(), ATLASSIAN_API_TOKEN.strip())
 
     try:
         with httpx.Client() as client:
             response = client.get(url, auth=auth, timeout=10.0)
-
             if response.status_code == 200:
                 data = response.json()
                 fields = data.get("fields", {})
@@ -182,6 +184,63 @@ def query_jira_api(issue_key: str):
         return {"status": "error", "message": str(e)}
 
 # ==========================================
+# Jira Text Search (Title/Description)
+# ==========================================
+def search_jira_tickets(search_query: str):
+    url = f"https://{ATLASSIAN_DOMAIN}/rest/api/3/search"
+    jql = f"summary ~ '{search_query}' OR description ~ '{search_query}'"
+    params = {"jql": jql, "maxResults": 3, "fields": "summary,status,assignee,priority,description"}
+    auth = (ATLASSIAN_EMAIL.strip(), ATLASSIAN_API_TOKEN.strip())
+
+    try:
+        with httpx.Client() as client:
+            response = client.get(url, params=params, auth=auth, timeout=10.0)
+            if response.status_code == 200:
+                data = response.json()
+                issues = []
+                for item in data.get("issues", []):
+                    fields = item.get("fields", {})
+                    issues.append({
+                        "issue_key": item.get("key"),
+                        "summary": fields.get("summary"),
+                        "jira_status": fields.get("status", {}).get("name"),
+                        "assignee": fields.get("assignee", {}).get("displayName", "Unassigned"),
+                        "priority": fields.get("priority", {}).get("name"),
+                    })
+                return {"status": "success", "matches": issues}
+            else:
+                return {"status": "error", "message": f"Jira Search error {response.status_code}"}
+    except Exception as e:
+        return {"status": "error", "message": str(e)}
+
+# ==========================================
+# NEW: Confluence Cloud Text Search
+# ==========================================
+def search_confluence_pages(search_query: str):
+    url = f"https://{ATLASSIAN_DOMAIN}/wiki/rest/api/content/search"
+    # CQL (Confluence Query Language) for text search
+    params = {"cql": f"text ~ \"{search_query}\"", "limit": 3}
+    auth = (ATLASSIAN_EMAIL.strip(), ATLASSIAN_API_TOKEN.strip())
+
+    try:
+        with httpx.Client() as client:
+            response = client.get(url, params=params, auth=auth, timeout=10.0)
+            if response.status_code == 200:
+                data = response.json()
+                pages = []
+                for item in data.get("results", []):
+                    pages.append({
+                        "title": item.get("title"),
+                        "type": item.get("type"),
+                        "url": f"https://{ATLASSIAN_DOMAIN}/wiki{item.get('_links', {}).get('webui', '')}"
+                    })
+                return {"status": "success", "pages": pages}
+            else:
+                return {"status": "error", "message": f"Confluence Search error {response.status_code}"}
+    except Exception as e:
+        return {"status": "error", "message": str(e)}
+
+# ==========================================
 # 0.3 TOOL DEFINITIONS FOR LLM AGENT
 # ==========================================
 copilot_tools = [
@@ -189,14 +248,11 @@ copilot_tools = [
         "type": "function",
         "function": {
             "name": "fetch_employee_details",
-            "description": "Fetch real-time employee profile info including role, past projects, current project, days on bench, and leaves taken using employee ID or email.",
+            "description": "Fetch real-time employee profile info using employee ID or email.",
             "parameters": {
                 "type": "object",
                 "properties": {
-                    "employee_identifier": {
-                        "type": "string",
-                        "description": "The Employee ID (e.g., EMP002) or email address (e.g., bob.jones@bank.com)."
-                    }
+                    "employee_identifier": {"type": "string", "description": "The Employee ID (e.g., EMP001) or email."}
                 },
                 "required": ["employee_identifier"]
             }
@@ -205,15 +261,40 @@ copilot_tools = [
     {
         "type": "function",
         "function": {
-            "name": "fetch_jira_ticket_details",
-            "description": "Fetch live summary, status, assignee, and priority for a specific Jira issue key (e.g., KAN-1, PROJ-12).",
+            "name": "search_jira_tickets",
+            "description": "Search Jira tickets by keywords in the title (summary) or description (e.g. 'wire transfer', 'authentication').",
             "parameters": {
                 "type": "object",
                 "properties": {
-                    "issue_key": {
-                        "type": "string",
-                        "description": "The exact Jira ticket issue key."
-                    }
+                    "search_query": {"type": "string", "description": "Keyword or phrase to search across Jira tickets."}
+                },
+                "required": ["search_query"]
+            }
+        }
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "search_confluence_pages",
+            "description": "Search live Confluence workspace pages for documentation, architecture guides, and compliance notes.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "search_query": {"type": "string", "description": "Search terms for Confluence documentation."}
+                },
+                "required": ["search_query"]
+            }
+        }
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "fetch_jira_ticket_details",
+            "description": "Fetch a specific Jira ticket by its exact key (e.g. SCRUM-6).",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "issue_key": {"type": "string", "description": "The exact Jira issue key (e.g. SCRUM-6)."}
                 },
                 "required": ["issue_key"]
             }
@@ -240,39 +321,33 @@ def home():
 def run_copilot(req: QueryRequest):
     try:
         user_question = req.question
+        tool_context_string = ""
+        sources_used = []
 
-        # Step 1: Force model to consider tools
-        # Step 4: Final Synthesis via gpt-5-mini with strict formatting rules
+        # ==========================================
+        # Step 1: Initial LLM Call with Tool Definitions
+        # ==========================================
         response = openai_client.chat.completions.create(
             model=LLM_DEPLOYMENT_NAME,
             messages=[
                 {
                     "role": "system",
                     "content": (
-                        "You are an expert Enterprise Engineering Knowledge Copilot. "
-                        "Format your final response cleanly and concisely using Markdown headings and bullet points. "
-                        "Structure your answer into these exact sections: "
-                        "1) Executive Summary, 2) Jira Ticket Details, 3) Employee Details, "
-                        "4) Compliance & Policy Guidelines, and 5) Sources. "
-                        "Keep bullet points short, scannable, and professional."
-                    ),
+                        "You are an enterprise knowledge assistant. When a user asks about specific "
+                        "employees, Jira tickets, or Confluence docs, you MUST call the respective tools."
+                    )
                 },
-                {
-                    "role": "user",
-                    "content": (
-                        f"User Question: {user_question}\n"
-                        f"{tool_context_string}\n\n"
-                        f"Vector Policy & Technical Documents:\n{combined_vector_context}"
-                    ),
-                },
+                {"role": "user", "content": user_question}
             ],
-            temperature=0.5,  # Lower temperature makes formatting more consistent
+            tools=copilot_tools,
+            tool_choice="auto"
         )
 
         response_message = response.choices[0].message
-        tool_context_string = ""
 
-        # Step 2: Execute tool calls if the model triggered them
+        # ==========================================
+        # Step 2: Execute Tool Calls if Triggered
+        # ==========================================
         if response_message.tool_calls:
             print(f"🛠️ Tool calls detected by model: {len(response_message.tool_calls)}")
             for tool_call in response_message.tool_calls:
@@ -289,10 +364,40 @@ def run_copilot(req: QueryRequest):
                     issue_key = function_args.get("issue_key")
                     api_result = query_jira_api(issue_key)
                     tool_context_string += f"\n\nLive Jira REST API Ticket Data:\n{json.dumps(api_result)}"
+                    if api_result.get("status") == "success":
+                        sources_used.append({
+                            "file": f"Jira Ticket: {api_result.get('issue_key')}",
+                            "type": "jira_live_api",
+                            "jira_links": [api_result.get('issue_key')]
+                        })
+
+                elif function_name == "search_jira_tickets":
+                    query_text = function_args.get("search_query")
+                    api_result = search_jira_tickets(query_text)
+                    tool_context_string += f"\n\nJira Keyword Search Results:\n{json.dumps(api_result)}"
+                    for match in api_result.get("matches", []):
+                        sources_used.append({
+                            "file": f"Jira Ticket: {match.get('issue_key')} - {match.get('summary')}",
+                            "type": "jira_search_api",
+                            "jira_links": [match.get('issue_key')]
+                        })
+
+                elif function_name == "search_confluence_pages":
+                    query_text = function_args.get("search_query")
+                    api_result = search_confluence_pages(query_text)
+                    tool_context_string += f"\n\nConfluence Documentation Results:\n{json.dumps(api_result)}"
+                    for page in api_result.get("pages", []):
+                        sources_used.append({
+                            "file": f"Confluence Page: {page.get('title')}",
+                            "type": "confluence_live_api",
+                            "jira_links": []
+                        })
         else:
             print("⚠️ No tool calls were triggered by the model for this query.")
 
-        # Step 3: Query Vector Database for RAG Context
+        # ==========================================
+        # Step 3: Query Azure AI Search (Vector RAG)
+        # ==========================================
         embedding_response = openai_client.embeddings.create(
             input=[user_question], model=EMBEDDING_DEPLOYMENT_NAME, dimensions=1536
         )
@@ -309,7 +414,6 @@ def run_copilot(req: QueryRequest):
         )
 
         context_snippets = []
-        sources_used = []
         for idx, result in enumerate(search_results, start=1):
             sources_used.append({
                 "file": result["source_file"],
@@ -322,16 +426,34 @@ def run_copilot(req: QueryRequest):
 
         combined_vector_context = "\n\n".join(context_snippets)
 
-        # Step 4: Final Synthesis combining Live Tools + Vector RAG
+        # ==========================================
+        # Step 4: Final Synthesis & Formatting LLM Call
+        # ==========================================
         final_response = openai_client.chat.completions.create(
             model=LLM_DEPLOYMENT_NAME,
             messages=[
                 {
                     "role": "system",
                     "content": (
-                        "You are an enterprise knowledge assistant. Answer the user accurately using "
-                        "the provided Live API tool results (Employee records / Jira API) and Vector RAG documents. "
-                        "Incorporate both seamlessly into your response."
+                        "You are an advanced Enterprise Engineering & Business Copilot for a banking platform. "
+                        "You have access to two distinct knowledge domains. You MUST strictly adhere to these boundaries:\n\n"
+                        "1. VECTOR DATABASE (Business Knowledge Base):\n"
+                        "   - Contains core business use cases, product policies, compliance rules, and card information "
+                        "     (e.g., how to apply for credit/debit cards, account terms, general banking product rules).\n"
+                        "   - Use this ONLY for business, product features, and policy-related questions.\n\n"
+                        "2. JIRA & CONFLUENCE TOOLS (Live Engineering Workspace):\n"
+                        "   - Contains technical issues, bug tracking, app workflows, system architecture, and developer documentation.\n"
+                        "   - Use this ONLY when the user asks about system workflows, error troubleshooting, ticket statuses, or engineering tasks.\n\n"
+                        "CRITICAL CITATION RULES:\n"
+                        "- If the answer comes from business documents, cite the Vector document source file name.\n"
+                        "- If the answer comes from engineering tools, include the exact Jira ticket ID (e.g., [SCRUM-6]) "
+                        "or the Confluence page title and URL.\n"
+                        "- Do NOT mix up business policies with technical bug tickets unless the user's prompt explicitly requests both.\n\n"
+                        "BULLET POINT & MARKDOWN FORMATTING RULES:\n"
+                        "- Structure your response with clear markdown subheadings (###) to organize sections.\n"
+                        "- Use bold lead-in phrases for every bullet point (e.g., * **Category Name:** Short description).\n"
+                        "- Keep each bullet concise (1-2 sentences maximum).\n"
+                        "- Avoid dense walls of text; prioritize clean, scannable lists optimized for UI display."
                     ),
                 },
                 {
@@ -339,11 +461,11 @@ def run_copilot(req: QueryRequest):
                     "content": (
                         f"User Question: {user_question}\n"
                         f"{tool_context_string}\n\n"
-                        f"Vector Policy & Technical Documents:\n{combined_vector_context}"
+                        f"Vector Policy & Business Documents:\n{combined_vector_context}"
                     ),
                 },
             ],
-            temperature=0.7,
+            temperature=0.3, # Lower temperature helps it respect routing rules strictly
         )
 
         return {
@@ -368,6 +490,7 @@ threading.Thread(target=run_server, daemon=True).start()
 
 ngrok_token = userdata.get("NGROK")
 ngrok.set_auth_token(ngrok_token)
+ngrok.kill()
 public_url = ngrok.connect(8000).public_url
 
 print("\n" + "=" * 60)
